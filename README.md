@@ -1,3 +1,3 @@
-# Arithmetic ![](https://github.com/mikeizbicki/arithmetic/workflows/tests/badge.svg)
+# Arithmetic ![](https://github.com/luisgomez214/arithmeticHW/workflows/tests/badge.svg)
 
 A simple python library for manipulating arithmetic expressions.

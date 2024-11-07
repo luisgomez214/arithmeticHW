@@ -4,31 +4,84 @@ This is a "simple" homework to practice parsing grammars and working with the re
 
 
 import lark
+from lark import Lark, Token, Tree, visitors
 
 
 grammar = r"""
     start: sum
 
     ?sum: product
-        | sum "+" product   -> add
-        | sum "-" product   -> sub
+        | sum "+" product  -> add
+        | sum "-" product  -> sub
+        | product "%" atom -> mod
+        | sum product      -> mul  // Implicit multiplication
 
-    ?product: atom
-        | product "*" atom  -> mul
-        | product "/" atom  -> div
+    ?product: power
+        | product "*" power -> mul
+        | product "/" power -> div
 
-    ?atom: NUMBER           -> number
-        | "(" sum ")"       -> paren
+    ?power: atom
+        | power "**" atom -> pow
+
+    ?atom: NUMBER          -> number
+        | "(" sum ")"    -> paren
+        | "-" atom       -> unary
+        | atom "(" sum ")"        -> implicit_mul 
 
     NUMBER: /-?[0-9]+/
 
     %import common.WS_INLINE
     %ignore WS_INLINE
 """
+
+
+
 parser = lark.Lark(grammar)
 
 
 class Interpreter(lark.visitors.Interpreter):
+   
+    def start(self, tree):
+        return self.visit(tree.children[0])
+
+    def number(self, tree):
+        return int(tree.children[0].value)
+
+    def unary(self, tree):
+        return -self.visit(tree.children[0])
+
+    def add(self, tree):
+        return self.visit(tree.children[0]) + self.visit(tree.children[1])
+
+    def sub(self, tree):
+        return self.visit(tree.children[0]) - self.visit(tree.children[1])
+
+    def mul(self, tree):
+        return self.visit(tree.children[0]) * self.visit(tree.children[1])
+
+    def div(self, tree):
+        return self.visit(tree.children[0]) // self.visit(tree.children[1])
+
+    def paren(self, tree):
+        return self.visit(tree.children[0])
+
+    def mod(self, tree):
+        return self.visit(tree.children[0]) % self.visit(tree.children[1])
+    
+    def pow(self, tree):
+        base = self.visit(tree.children[0])
+        exponent = self.visit(tree.children[1])
+        
+        if exponent < 0:
+            return 0
+        return base ** exponent
+
+    def implicit_mul(self, tree):
+        v0 = self.visit(tree.children[0])
+        v1 = self.visit(tree.children[1])
+        return v0 * v1
+
+
     '''
     Compute the value of the expression.
     The interpreter class processes nodes "top down",
@@ -36,6 +89,7 @@ class Interpreter(lark.visitors.Interpreter):
 
     FIXME:
     Get all the test cases to pass.
+
 
     >>> interpreter = Interpreter()
     >>> interpreter.visit(parser.parse("1"))
@@ -66,6 +120,8 @@ class Interpreter(lark.visitors.Interpreter):
     NOTE:
     The grammar for the arithmetic above should all be implemented correctly.
     The arithmetic expressions below, however, will require you to modify the grammar.
+    
+
 
     Modular division:
 
@@ -130,6 +186,45 @@ class Interpreter(lark.visitors.Interpreter):
 
 
 class Simplifier(lark.Transformer):
+
+    def start(self, children):
+        return children[0]    
+
+    def unary(self, children):
+        return -children[0]
+
+    def number(self,children):
+        return int(children[0].value) 
+    
+    def add(self, children):
+        return children[0] + children[1]
+
+    def sub(self, children):
+        return children[0] - children[1]
+
+    def mul(self, children):
+        return children[0] * children[1]
+
+    def div(self, children):
+        return children[0] // children[1]
+
+    def paren(self, children):
+        return children[0]
+
+    def mod(self, children):
+        return children[0] % children[1]
+
+    def pow(self, children):
+        base = children[0]
+        exponent = children[1]
+
+        if exponent < 0:
+            return 0
+        return base ** exponent
+
+    def implicit_mul(self, children):
+        return children[0] * children[1]
+
     '''
     Compute the value of the expression.
     The lark.Transformer class processes nodes "bottom up",
@@ -234,6 +329,43 @@ class Simplifier(lark.Transformer):
 
 
 def minify(expr):
+
+    class RemoveParentheses(lark.Transformer):
+        def paren(self, children):
+            return children[0]  # Remove unnecessary parentheses
+
+        def start(self, children):
+            return children[0]
+
+    class ToString(lark.Transformer):
+        def start(self, children):
+            return ''.join(children)
+
+        def number(self, children):
+            return children[0].value
+        
+        def add(self, children):
+            return f"{children[0]}+{children[1]}"
+
+        def sub(self, children):
+            return f"{children[0]}-{children[1]}"
+        
+        def mul(self, children):
+            return f"{children[0]}*{children[1]}"
+        
+        def div(self, children):
+            return f"{children[0]}/{children[1]}"
+        
+        def mod(self, children):
+            return f"{children[0]}%{children[1]}"
+        
+        def pow(self, children):
+            return f"{children[0]}**{children[1]}"
+
+    parsed = parser.parse(expr)
+    no_parens = RemoveParentheses().transform(parsed)
+    return ToString().transform(no_parens)
+
     '''
     "Minifying" code is the process of removing unnecessary characters.
     In our arithmetic language, this means removing unnecessary whitespace and unnecessary parentheses.
@@ -311,6 +443,71 @@ def infix_to_rpn(expr):
     >>> infix_to_rpn('(1*2)+3+4*(5-6)')
     '1 2 * 3 + 4 5 6 - * +'
     '''
+        
+    # Operator precedence and associativity
+    precedence = {
+        '+': 1,
+        '-': 1,
+        '*': 2,
+        '/': 2,
+        '%': 2,
+        '**': 3  # Exponentiation has the highest precedence
+    }
+    
+    # Right associativity for exponentiation
+    right_associative = {'**'}
+
+    def greater_precedence(op1, op2):
+        if op1 in right_associative:
+            return precedence[op1] > precedence[op2]
+        return precedence[op1] >= precedence[op2]
+    
+    # Output queue (RPN) and operator stack
+    output = []
+    operators = []
+    
+    # Tokenize the input expression (split by spaces or detect operators)
+    tokens = []
+    i = 0
+    while i < len(expr):
+        if expr[i].isdigit() or (expr[i] == '-' and (i == 0 or expr[i-1] in '([')):
+            num = ''
+            while i < len(expr) and (expr[i].isdigit() or expr[i] == '.'):
+                num += expr[i]
+                i += 1
+            tokens.append(num)
+        elif expr[i] in '+-*/%()**':
+            if expr[i:i+2] == '**':  # Handling the exponentiation operator '**'
+                tokens.append('**')
+                i += 2
+            else:
+                tokens.append(expr[i])
+                i += 1
+        else:
+            i += 1  # Skip spaces
+    
+    for token in tokens:
+        if token.isdigit():  # If it's a number, add it to output
+            output.append(token)
+        elif token == '(':  # Left parenthesis, push it onto the stack
+            operators.append(token)
+        elif token == ')':  # Right parenthesis, pop from stack until '('
+            while operators and operators[-1] != '(':
+                output.append(operators.pop())
+            operators.pop()  # Pop the '('
+        else:  # Operator
+            while (operators and operators[-1] != '(' and 
+                   (greater_precedence(operators[-1], token) or 
+                    precedence.get(token, 0) == precedence.get(operators[-1], 0))):
+                output.append(operators.pop())
+            operators.append(token)
+    
+    # Pop any remaining operators from the stack
+    while operators:
+        output.append(operators.pop())
+
+    # Join the output as a string with spaces between the elements
+    return ' '.join(output)
 
 
 def eval_rpn(expr):
@@ -364,3 +561,137 @@ def eval_rpn(expr):
             stack.append(operators[token](v1, v2))
     assert len(stack) == 1
     return stack[0]
+
+
+
+
+
+
+if __name__ == "__main__":
+    interpreter = Interpreter()  # Create an instance of Interpreter
+    simplifier = Simplifier()   
+ 
+
+    # Testing the Interpreter
+    print(interpreter.visit(parser.parse("1")))  # Should output: 1
+    print(interpreter.visit(parser.parse("-1")))  # Should output: -1
+    print(interpreter.visit(parser.parse("1+2")))  # Should output: 3
+    print(interpreter.visit(parser.parse("1-2")))  # Should output: -1
+    print(interpreter.visit(parser.parse("(1+2)*3")))  # Should output: 9
+    print(interpreter.visit(parser.parse("1+2*3")))  # Should output: 7
+    print(interpreter.visit(parser.parse("1*2+3")))  # Should output: 5
+    print(interpreter.visit(parser.parse("1*(2+3)")))  # Should output: 5
+    print(interpreter.visit(parser.parse("(1*2)+3*4*(5-6)")))  # Should output: -10
+    print(interpreter.visit(parser.parse("((1*2)+3*4)*(5-6)")))  # Should output: -14
+    print(interpreter.visit(parser.parse("(1*(2+3)*4)*(5-6)")))  # Should output: -20
+    print(interpreter.visit(parser.parse("((1*2+(3)*4))*(5-6)")))  # Should output: -14
+
+    # Modular division tests for Interpreter
+    print(interpreter.visit(parser.parse("1%2")))  # Should output: 1
+    print(interpreter.visit(parser.parse("3%2")))  # Should output: 1
+    print(interpreter.visit(parser.parse("(1+2)%3")))  # Should output: 0
+
+    # Exponentiation tests for Interpreter
+    print(interpreter.visit(parser.parse("2**1")))  # Should output: 2
+    print(interpreter.visit(parser.parse("2**2")))  # Should output: 4
+    print(interpreter.visit(parser.parse("2**3")))  # Should output: 8
+    print(interpreter.visit(parser.parse("1+2**3")))  # Should output: 9
+    print(interpreter.visit(parser.parse("(1+2)**3")))  # Should output: 27
+    print(interpreter.visit(parser.parse("1+2**3+4")))  # Should output: 13
+    print(interpreter.visit(parser.parse("(1+2)**(3+4)")))  # Should output: 2187
+    print(interpreter.visit(parser.parse("(1+2)**3-4")))  # Should output: 23
+
+    # Exponentiation with negative exponents for Interpreter
+    print(interpreter.visit(parser.parse("2**-1")))  # Should output: 0
+    print(interpreter.visit(parser.parse("2**(-1)")))  # Should output: 0
+    print(interpreter.visit(parser.parse("(1+2)**(3-4)")))  # Should output: 0
+    print(interpreter.visit(parser.parse("1+2**(3-4)")))  # Should output: 1
+    print(interpreter.visit(parser.parse("1+2**(-3)*4")))  # Should output: 1
+
+    # Implicit multiplication tests for Interpreter
+    print(interpreter.visit(parser.parse("1+2(3)")))  # Should output: 7
+    print(interpreter.visit(parser.parse("1(2(3))")))  # Should output: 6
+    print(interpreter.visit(parser.parse("(1)(2)(3)")))  # Should output: 6
+    print(interpreter.visit(parser.parse("(1)(2)+(3)")))  # Should output: 5
+    print(interpreter.visit(parser.parse("(1+2)(3+4)")))  # Should output: 21
+    print(interpreter.visit(parser.parse("(1+2)(3(4))")))  # Should output: 36
+
+
+    print(simplifier.transform(parser.parse("1")))  # Should output: 1
+    print(simplifier.transform(parser.parse("-1")))  # Should output: -1
+    print(simplifier.transform(parser.parse("1+2")))  # Should output: 3
+    print(simplifier.transform(parser.parse("1-2")))  # Should output: -1
+    print(simplifier.transform(parser.parse("(1+2)*3")))  # Should output: 9
+    print(simplifier.transform(parser.parse("1+2*3")))  # Should output: 7
+    print(simplifier.transform(parser.parse("1*2+3")))  # Should output: 5
+    print(simplifier.transform(parser.parse("1*(2+3)")))  # Should output: 5
+    print(simplifier.transform(parser.parse("(1*2)+3*4*(5-6)")))  # Should output: -10
+    print(simplifier.transform(parser.parse("((1*2)+3*4)*(5-6)")))  # Should output: -14
+    print(simplifier.transform(parser.parse("(1*(2+3)*4)*(5-6)")))  # Should output: -20
+    print(simplifier.transform(parser.parse("((1*2+(3)*4))*(5-6)")))  # Should output: -14
+
+    # Modular division tests
+    print(simplifier.transform(parser.parse("1%2")))  # Should output: 1
+    print(simplifier.transform(parser.parse("3%2")))  # Should output: 1
+    print(simplifier.transform(parser.parse("(1+2)%3")))  # Should output: 0
+
+    # Exponentiation tests
+    print(simplifier.transform(parser.parse("2**1")))  # Should output: 2
+    print(simplifier.transform(parser.parse("2**2")))  # Should output: 4
+    print(simplifier.transform(parser.parse("2**3")))  # Should output: 8
+    print(simplifier.transform(parser.parse("1+2**3")))  # Should output: 9
+    print(simplifier.transform(parser.parse("(1+2)**3")))  # Should output: 27
+    print(simplifier.transform(parser.parse("1+2**3+4")))  # Should output: 13
+    print(simplifier.transform(parser.parse("(1+2)**(3+4)")))  # Should output: 2187
+    print(simplifier.transform(parser.parse("(1+2)**3-4")))  # Should output: 23
+
+    # Exponentiation with negative exponents
+    print(simplifier.transform(parser.parse("2**-1")))  # Should output: 0
+    print(simplifier.transform(parser.parse("2**(-1)")))  # Should output: 0
+    print(simplifier.transform(parser.parse("(1+2)**(3-4)")))  # Should output: 0
+    print(simplifier.transform(parser.parse("1+2**(3-4)")))  # Should output: 1
+    print(simplifier.transform(parser.parse("1+2**(-3)*4")))  # Should output: 1
+
+    # Implicit multiplication tests
+    print(simplifier.transform(parser.parse("1+2(3)")))  # Should output: 7
+    print(simplifier.transform(parser.parse("1(2(3))")))  # Should output: 6
+    print(simplifier.transform(parser.parse("(1)(2)(3)")))  # Should output: 6
+    print(simplifier.transform(parser.parse("(1)(2)+(3)")))  # Should output: 5
+    print(simplifier.transform(parser.parse("(1+2)(3+4)")))  # Should output: 21
+    print(simplifier.transform(parser.parse("(1+2)(3(4))")))
+
+
+
+    print(minify("1 + 2"))
+    print(minify("1 + ((((2))))"))
+    print(minify("1 + (2*3)"))
+    print(minify("1 + (2/3)"))
+    print(minify("(1 + 2)*3"))
+    print(minify("(1 - 2)*3"))
+    print(minify("(1 - 2)+3"))
+    print(minify("(1 + 2)+(3 + 4)"))
+    print(minify("(1 + 2)*(3 + 4)"))
+    print(minify("1 + (((2)*(3)) + 4)"))
+    print(minify("1 + (((2)*(3)) + 4 * ((5 + 6) - 7))"))
+
+
+    print(infix_to_rpn('1'))
+    print(infix_to_rpn('1+2'))
+    print(infix_to_rpn('1-2'))
+    print( infix_to_rpn('(1+2)*3'))
+    print(infix_to_rpn('1+2*3'))
+    print(infix_to_rpn('1*2+3'))
+    print(infix_to_rpn('1*(2+3)'))
+    print(infix_to_rpn('(1*2)+3+4*(5-6)'))
+
+
+    print(eval_rpn("1"))
+    print(eval_rpn("1 2 +"))
+    print(eval_rpn("1 2 -"))
+    print(eval_rpn("1 2 + 3 *")) 
+    print(eval_rpn("1 2 3 * +"))
+    print(eval_rpn("1 2 * 3 +"))
+    print(eval_rpn("1 2 3 + *"))
+    print(eval_rpn("1 2 * 3 + 4 5 6 - * +"))
+
+
